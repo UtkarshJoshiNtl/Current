@@ -60,9 +60,8 @@ public:
     // ------------------------------------------------------------------------
     bool insert(const Key& key, Value value, std::chrono::seconds ttl) {
         auto& shard = _shard_for(key);
-        std::lock_guard<std::mutex> lock(shard.mtx);
+        std::lock_guard<std::shared_mutex> lock(shard.mtx);
 
-        // Check duplicate
         if (shard.map.count(key)) {
             return false;
         }
@@ -73,10 +72,10 @@ public:
         shard.eviction.insert(key, expiry);
         _size.fetch_add(1, std::memory_order_relaxed);
 
-        // Evict a batch of expired entries while we hold the lock
+        // Eviction policy guarantees only expired entries are passed.
         shard.eviction.evict_expired(clock::now(), [&](const Key& k) {
             auto it = shard.map.find(k);
-            if (it != shard.map.end() && it->second.expiry <= clock::now()) {
+            if (it != shard.map.end()) {
                 shard.map.erase(it);
                 _size.fetch_sub(1, std::memory_order_relaxed);
             }
@@ -88,11 +87,12 @@ public:
     // ---- contains ----------------------------------------------------------
     //
     // Check whether key exists AND has not expired.
+    // Uses shared_lock for concurrent readers.
     // Removes the entry if it has expired (lazy cleanup).
     // ------------------------------------------------------------------------
     bool contains(const Key& key) {
         auto& shard = _shard_for(key);
-        std::lock_guard<std::mutex> lock(shard.mtx);
+        std::shared_lock<std::shared_mutex> lock(shard.mtx);
 
         auto it = shard.map.find(key);
         if (it == shard.map.end()) {
@@ -100,8 +100,15 @@ public:
         }
 
         if (clock::now() > it->second.expiry) {
-            shard.map.erase(it);
-            _size.fetch_sub(1, std::memory_order_relaxed);
+            // Upgrade to exclusive lock for erase
+            lock.unlock();
+            std::lock_guard<std::shared_mutex> ex_lock(shard.mtx);
+            // Re-check after upgrade — another thread may have erased it
+            auto it2 = shard.map.find(key);
+            if (it2 != shard.map.end() && clock::now() > it2->second.expiry) {
+                shard.map.erase(it2);
+                _size.fetch_sub(1, std::memory_order_relaxed);
+            }
             return false;
         }
 
@@ -118,14 +125,18 @@ public:
         time_point now = clock::now();
 
         for (auto& shard : _shards) {
-            std::lock_guard<std::mutex> lock(shard.mtx);
+            std::lock_guard<std::shared_mutex> lock(shard.mtx);
             total += shard.eviction.evict_expired(now, [&](const Key& k) {
                 auto it = shard.map.find(k);
-                if (it != shard.map.end() && it->second.expiry <= now) {
+                if (it != shard.map.end()) {
                     shard.map.erase(it);
                     _size.fetch_sub(1, std::memory_order_relaxed);
                 }
             });
+            // Shrink if map becomes sparse after mass eviction
+            if (shard.map.size() < shard.map.bucket_count() / 4) {
+                shard.map.rehash(0);
+            }
         }
         return total;
     }
@@ -146,7 +157,7 @@ public:
         s.min_shard = SIZE_MAX;
         s.max_shard = 0;
         for (const auto& shard : _shards) {
-            std::lock_guard<std::mutex> lock(shard.mtx);
+            std::lock_guard<std::shared_mutex> lock(shard.mtx);
             size_t sz = shard.map.size();
             s.min_shard = std::min(s.min_shard, sz);
             s.max_shard = std::max(s.max_shard, sz);
@@ -162,7 +173,7 @@ private:
     };
 
     struct shard {
-        mutable std::mutex mtx;
+        mutable std::shared_mutex mtx;
         std::unordered_map<Key, entry, Hash> map;
         EvictionPolicy<Key, clock> eviction;
     };
@@ -173,7 +184,11 @@ private:
     // ---- helpers -----------------------------------------------------------
 
     shard& _shard_for(const Key& key) {
-        return _shards[Hash{}(key) % _shards.size()];
+        size_t n = _shards.size();
+        size_t h = Hash{}(key);
+        if ((n & (n - 1)) == 0) [[likely]]
+            return _shards[h & (n - 1)];
+        return _shards[h % n];
     }
 
     static size_t default_shard_count() {

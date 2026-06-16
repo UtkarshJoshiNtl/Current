@@ -37,36 +37,33 @@ public:
     // Returns true if this thread "won" the slot (either empty or stale).
     // No key-equality check: the slot is simply overwritten.
     bool insert(Key key) noexcept {
-        size_t idx = Hash{}(key) & _mask;
-        uint64_t key_hash = static_cast<uint64_t>(Hash{}(key));
+        uint64_t h = static_cast<uint64_t>(Hash{}(key));
+        size_t idx = h & _mask;
+        uint64_t fingerprint = h & HASH_MASK;
 
-        // Encode generation in low bits, hash in high bits
-        slot_value desired = encode(key_hash, _slots[idx].generation.load(std::memory_order_relaxed) + 1);
         slot_value expected = _slots[idx].data.load(std::memory_order_relaxed);
+        // Bump generation (low 8 bits) to prevent immediate ABA reclamation
+        slot_value desired = fingerprint | ((expected + 1) & GENERATION_MASK);
 
-        // CAS loop: try to claim the slot
-        while (true) {
-            // If the slot holds a different hash (or is empty), CAS to claim it
-            if (_slots[idx].data.compare_exchange_weak(
-                    expected, desired, std::memory_order_acq_rel))
-            {
-                _slots[idx].generation.fetch_add(1, std::memory_order_relaxed);
-                return true;
-            }
-            // Slot is held by another thread's hash — treat as occupied;
-            // in a lossy cache this is "insertion failed, slot taken"
-            return false;
+        if (_slots[idx].data.compare_exchange_weak(
+                expected, desired, std::memory_order_acq_rel))
+        {
+            return true;
         }
+        // CAS failed — slot was claimed by another thread between load and CAS.
+        // In a lossy cache this is "insertion failed, slot taken".
+        return false;
     }
 
     // ---- lookup ------------------------------------------------------------
-    // Returns true if the slot's hash matches (probabilistic).
+    // Returns true if the slot's hash fingerprint matches (probabilistic).
     // False positives are possible (hash collision) but safe for replay cache.
     bool contains(Key key) const noexcept {
-        size_t idx = Hash{}(key) & _mask;
-        uint64_t key_hash = static_cast<uint64_t>(Hash{}(key));
+        uint64_t h = static_cast<uint64_t>(Hash{}(key));
+        size_t idx = h & _mask;
+        uint64_t fingerprint = h & HASH_MASK;
         slot_value val = _slots[idx].data.load(std::memory_order_acquire);
-        return (val & ~GENERATION_MASK) == (key_hash & ~GENERATION_MASK);
+        return (val & HASH_MASK) == fingerprint;
     }
 
     size_t capacity() const noexcept { return _capacity; }
@@ -79,7 +76,6 @@ private:
 
     struct alignas(64) slot {
         std::atomic<slot_value> data{0};
-        std::atomic<uint64_t> generation{0};
     };
 
     size_t _capacity;
@@ -90,10 +86,6 @@ private:
         size_t p = 1;
         while (p < n) p <<= 1;
         return p;
-    }
-
-    static slot_value encode(uint64_t hash, uint64_t gen) noexcept {
-        return ((hash & HASH_MASK) | (gen & GENERATION_MASK));
     }
 };
 
