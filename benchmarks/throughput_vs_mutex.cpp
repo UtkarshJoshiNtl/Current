@@ -21,7 +21,6 @@ static std::vector<int> make_keys(size_t n) {
 
 static void BM_ShardedMap_1shard(benchmark::State& state) {
     auto keys = make_keys(state.range(0));
-    size_t idx = 0;
     for (auto _ : state) {
         sharded_map<int, int> map(1);
         for (size_t i = 0; i < keys.size(); ++i) {

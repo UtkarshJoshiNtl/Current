@@ -27,6 +27,10 @@ namespace concurrent_cache {
 //   - Insert:  O(1) hash + O(1) shard-locked insert   (amortized, excluding eviction)
 //   - Eviction: policy-dependent (sequential: O(K) amortized; heap: O(K log N))
 // ---------------------------------------------------------------------------
+// is_pow2 helper for C++17 ([[likely]] is C++20)
+namespace detail {
+    inline bool is_pow2(size_t n) noexcept { return (n & (n - 1)) == 0; }
+} // namespace detail
 template <typename Key,
           typename Value,
           typename Hash = std::hash<Key>,
@@ -92,27 +96,24 @@ public:
     // ------------------------------------------------------------------------
     bool contains(const Key& key) {
         auto& shard = _shard_for(key);
-        std::shared_lock<std::shared_mutex> lock(shard.mtx);
-
-        auto it = shard.map.find(key);
-        if (it == shard.map.end()) {
-            return false;
-        }
-
-        if (clock::now() > it->second.expiry) {
-            // Upgrade to exclusive lock for erase
-            lock.unlock();
-            std::lock_guard<std::shared_mutex> ex_lock(shard.mtx);
-            // Re-check after upgrade — another thread may have erased it
-            auto it2 = shard.map.find(key);
-            if (it2 != shard.map.end() && clock::now() > it2->second.expiry) {
-                shard.map.erase(it2);
-                _size.fetch_sub(1, std::memory_order_relaxed);
+        {
+            std::shared_lock<std::shared_mutex> lock(shard.mtx);
+            auto it = shard.map.find(key);
+            if (it == shard.map.end()) {
+                return false;
             }
-            return false;
+            if (clock::now() <= it->second.expiry) {
+                return true;
+            }
         }
-
-        return true;
+        // Upgrade to exclusive lock for erase (shared lock is now released)
+        std::lock_guard<std::shared_mutex> ex_lock(shard.mtx);
+        auto it = shard.map.find(key);
+        if (it != shard.map.end() && clock::now() > it->second.expiry) {
+            shard.map.erase(it);
+            _size.fetch_sub(1, std::memory_order_relaxed);
+        }
+        return false;
     }
 
     // ---- evict_expired -----------------------------------------------------
@@ -154,12 +155,18 @@ public:
         stats s;
         s.shard_count = _shards.size();
         s.entries = _size.load(std::memory_order_relaxed);
-        s.min_shard = SIZE_MAX;
+        s.min_shard = 0;
         s.max_shard = 0;
+        bool first = true;
         for (const auto& shard : _shards) {
             std::lock_guard<std::shared_mutex> lock(shard.mtx);
             size_t sz = shard.map.size();
-            s.min_shard = std::min(s.min_shard, sz);
+            if (first) {
+                s.min_shard = sz;
+                first = false;
+            } else {
+                s.min_shard = std::min(s.min_shard, sz);
+            }
             s.max_shard = std::max(s.max_shard, sz);
         }
         return s;
@@ -186,7 +193,7 @@ private:
     shard& _shard_for(const Key& key) {
         size_t n = _shards.size();
         size_t h = Hash{}(key);
-        if ((n & (n - 1)) == 0) [[likely]]
+        if (detail::is_pow2(n))
             return _shards[h & (n - 1)];
         return _shards[h % n];
     }

@@ -63,7 +63,6 @@ TEST(sharded_map_concurrent_test, parallel_insert_duplicate_keys) {
 TEST(sharded_map_concurrent_test, mixed_insert_and_contains) {
     sharded_map<int, int> map(8);
     constexpr int kOps = 20'000;
-    std::atomic<bool> done{false};
     std::atomic<size_t> errors{0};
 
     std::vector<std::thread> threads;
@@ -82,7 +81,7 @@ TEST(sharded_map_concurrent_test, mixed_insert_and_contains) {
 
     // Checkers
     for (int t = 0; t < 2; ++t) {
-        threads.emplace_back([&] {
+        threads.emplace_back([&, t] {
             std::mt19937 rng(static_cast<unsigned int>(100 + t));
             std::uniform_int_distribution<int> dist(0, kOps - 1);
             for (int i = 0; i < kOps / 2; ++i) {

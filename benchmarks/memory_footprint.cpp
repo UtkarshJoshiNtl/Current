@@ -15,16 +15,12 @@ using namespace concurrent_cache;
 static void BM_MemoryFootprint(benchmark::State& state) {
     size_t n = static_cast<size_t>(state.range(0));
     size_t shards = static_cast<size_t>(state.range(1));
-    size_t entries_before = 0;
 
     std::mt19937 rng(42);
     std::uniform_int_distribution<int> dist(0, 1 << 24);
 
     for (auto _ : state) {
         sharded_map<int, int> map(shards);
-
-        // Record baseline size (empty map overhead)
-        entries_before = map.size();
 
         for (size_t i = 0; i < n; ++i) {
             map.insert(dist(rng), 1, std::chrono::seconds(300));

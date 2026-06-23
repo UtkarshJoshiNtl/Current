@@ -80,7 +80,7 @@ private:
 
     size_t _capacity;
     size_t _mask;
-    mutable std::vector<slot> _slots;
+    std::vector<slot> _slots;
 
     static size_t round_up_pow2(size_t n) {
         size_t p = 1;
