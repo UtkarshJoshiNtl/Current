@@ -1,5 +1,13 @@
 #pragma once
 
+/**
+ * @file sharded_map.hpp
+ * @brief Concurrent sharded hash map with TTL-based expiry.
+ *
+ * Provides sharded_map: a concurrent hash map divided into N independently
+ * locked shards, each composed with a configurable TTL eviction policy.
+ */
+
 #include "concurrent_cache/timed_eviction.hpp"
 
 #include <atomic>
@@ -14,6 +22,11 @@
 
 namespace concurrent_cache {
 
+// is_pow2 helper for C++17 ([[likely]] is C++20)
+namespace detail {
+    inline bool is_pow2(size_t n) noexcept { return (n & (n - 1)) == 0; }
+} // namespace detail
+
 // ---------------------------------------------------------------------------
 // sharded_map
 //
@@ -27,10 +40,24 @@ namespace concurrent_cache {
 //   - Insert:  O(1) hash + O(1) shard-locked insert   (amortized, excluding eviction)
 //   - Eviction: policy-dependent (sequential: O(K) amortized; heap: O(K log N))
 // ---------------------------------------------------------------------------
-// is_pow2 helper for C++17 ([[likely]] is C++20)
-namespace detail {
-    inline bool is_pow2(size_t n) noexcept { return (n & (n - 1)) == 0; }
-} // namespace detail
+
+/**
+ * @brief A concurrent, sharded hash map with TTL-based entry expiry.
+ *
+ * The key space is divided across N shards, each protected by a
+ * std::shared_mutex for fine-grained locking.  A configurable eviction
+ * policy (sequential_eviction or heap_eviction) tracks expiration.
+ *
+ * @tparam Key            Entry key type.
+ * @tparam Value          Entry value type.
+ * @tparam Hash           Hash functor (default: std::hash<Key>).
+ * @tparam EvictionPolicy Eviction policy template (default: sequential_eviction).
+ *
+ * Thread safety:
+ * - Concurrent insert, contains, and evict_expired calls are safe from
+ *   any number of threads.
+ * - size() and get_stats() return approximate values.
+ */
 template <typename Key,
           typename Value,
           typename Hash = std::hash<Key>,
@@ -42,6 +69,13 @@ public:
 
     // ---- construction ------------------------------------------------------
 
+    /**
+     * @brief Construct a sharded map.
+     * @param shard_count Number of shards (default: std::thread::hardware_concurrency()
+     *                    or 4 if hardware concurrency is not detectable).
+     *
+     * Each shard's internal unordered_map is pre-reserved with 1024 buckets.
+     */
     explicit sharded_map(size_t shard_count = 0)
         : _shards(shard_count > 0 ? shard_count : default_shard_count())
         , _size(0)
@@ -53,7 +87,10 @@ public:
 
     // ---- capacity ----------------------------------------------------------
 
+    /** @brief Approximate number of entries currently stored (relaxed atomic read). */
     size_t size() const noexcept { return _size.load(std::memory_order_relaxed); }
+
+    /** @brief Number of shards. */
     size_t shard_count() const noexcept { return _shards.size(); }
 
     // ---- insert ------------------------------------------------------------
@@ -62,6 +99,20 @@ public:
     // Returns true if the key was newly inserted;
     // returns false if the key already exists (no update).
     // ------------------------------------------------------------------------
+
+    /**
+     * @brief Insert a key-value pair with a TTL.
+     * @param key   The key to insert.
+     * @param value The value to associate with the key.
+     * @param ttl   Time-to-live from now.
+     * @return true  if the key was newly inserted.
+     * @return false if the key already exists (no update performed).
+     *
+     * Acquires an exclusive lock on the target shard.  After insertion,
+     * eagerly evicts any already-expired entries in that shard.
+     *
+     * Thread safety: safe for concurrent calls (shard-level locking).
+     */
     bool insert(const Key& key, Value value, std::chrono::seconds ttl) {
         auto& shard = _shard_for(key);
         std::lock_guard<std::shared_mutex> lock(shard.mtx);
@@ -94,6 +145,19 @@ public:
     // Uses shared_lock for concurrent readers.
     // Removes the entry if it has expired (lazy cleanup).
     // ------------------------------------------------------------------------
+
+    /**
+     * @brief Check if a key exists and has not expired.
+     * @param key The key to look up.
+     * @return true if the key exists and is not yet expired.
+     * @return false if the key does not exist or has expired (lazily removed).
+     *
+     * Uses a shared_lock for concurrent readers.  If the entry is found but
+     * expired, the lock is upgraded to exclusive and the entry is erased
+     * (lazy cleanup).
+     *
+     * Thread safety: safe for concurrent calls.
+     */
     bool contains(const Key& key) {
         auto& shard = _shard_for(key);
         {
@@ -121,6 +185,16 @@ public:
     // Explicitly evict all expired entries across all shards.
     // Returns total number of entries evicted.
     // ------------------------------------------------------------------------
+
+    /**
+     * @brief Evict all expired entries across every shard.
+     * @return Total number of entries evicted.
+     *
+     * Iterates all shards under exclusive lock, evicts expired entries,
+     * and shrinks any shard whose map is less than 25% full.
+     *
+     * Thread safety: safe for concurrent calls.
+     */
     size_t evict_expired() {
         size_t total = 0;
         time_point now = clock::now();
@@ -144,13 +218,21 @@ public:
 
     // ---- statistics (for diagnostics) --------------------------------------
 
+    /** @brief Diagnostic statistics for a sharded_map. */
     struct stats {
-        size_t shard_count;
-        size_t entries;
-        size_t min_shard;
-        size_t max_shard;
+        size_t shard_count;  ///< Total number of shards.
+        size_t entries;      ///< Approximate total entries.
+        size_t min_shard;    ///< Smallest shard size.
+        size_t max_shard;    ///< Largest shard size.
     };
 
+    /**
+     * @brief Collect approximate diagnostic statistics.
+     * @return A stats struct populated with current values.
+     *
+     * Locks every shard sequentially (blocking).  Intended for diagnostics
+     * and monitoring, not hot paths.
+     */
     stats get_stats() const {
         stats s;
         s.shard_count = _shards.size();
@@ -190,6 +272,7 @@ private:
 
     // ---- helpers -----------------------------------------------------------
 
+    /** @brief Select the shard for a given key via hash. */
     shard& _shard_for(const Key& key) {
         size_t n = _shards.size();
         size_t h = Hash{}(key);
@@ -198,6 +281,7 @@ private:
         return _shards[h % n];
     }
 
+    /** @brief Determine default shard count from hardware concurrency. */
     static size_t default_shard_count() {
         unsigned hc = std::thread::hardware_concurrency();
         return hc > 0 ? static_cast<size_t>(hc) : 4;
