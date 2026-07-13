@@ -63,7 +63,7 @@ TEST(sharded_map_test, evict_expired_all) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     size_t evicted = map.evict_expired();
-    // Entries evicted during insert (lazy); evict_expired finds nothing new.
+    // Entries eagerly evicted during insert; evict_expired finds nothing new.
     EXPECT_EQ(evicted, 0);
     EXPECT_FALSE(map.contains(1));
     EXPECT_FALSE(map.contains(2));

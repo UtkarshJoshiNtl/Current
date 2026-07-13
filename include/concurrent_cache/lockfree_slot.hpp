@@ -122,7 +122,7 @@ public:
         size_t idx = h & _mask;
         uint64_t fingerprint = h & HASH_MASK;
         slot_value val = _slots[idx].data.load(std::memory_order_acquire);
-        return (val & HASH_MASK) == fingerprint;
+        return val != 0 && (val & HASH_MASK) == fingerprint;
     }
 
     /** @brief The (rounded-up) number of slots. */
