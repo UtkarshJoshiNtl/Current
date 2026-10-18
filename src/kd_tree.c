@@ -150,3 +150,21 @@ size_t kd_screen(const KDTree *t, const Catalog *c, double threshold, PairCB cb,
     }
     return pairs;
 }
+
+/* ------------------------------------------------- Engine vtable shim */
+
+EngineImpl *kd_engine_build(const Catalog *c, void *params)
+{
+    (void)params;
+    return (EngineImpl *)kd_build(c);
+}
+
+void kd_engine_free(EngineImpl *e)
+{
+    kd_free((KDTree *)e);
+}
+
+size_t kd_engine_screen(EngineImpl *e, const Catalog *c, double threshold, PairCB cb, void *ud)
+{
+    return kd_screen((const KDTree *)e, c, threshold, cb, ud);
+}

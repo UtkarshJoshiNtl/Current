@@ -20,6 +20,10 @@ typedef struct {
     const char *shot_path;   /* SDL only: save a BMP of the final frame */
     void      (*on_reset)(void *ud);
     void       *reset_ud;
+
+    /* initial engine selection (panel captions + picker defaults) */
+    EngineType  engine_left;
+    EngineType  engine_right;
 } GuiOptions;
 
 /* Returns 0 on clean exit, non-zero if the UI could not be created. */

@@ -1,0 +1,16 @@
+# build outputs
+astro
+astro.exe
+astro_gui.exe
+obj/
+
+# Windows ADS marker files (never useful in git)
+*:Zone.Identifier
+
+# editors / IDE
+.vscode/
+.idea/
+*.swp
+
+# misc
+*.bmp

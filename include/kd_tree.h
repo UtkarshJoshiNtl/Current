@@ -13,6 +13,7 @@
 #define KD_TREE_H
 
 #include "catalog.h"
+#include "engine.h"
 
 typedef struct KDNode {
     Object        *obj;
@@ -27,11 +28,7 @@ typedef struct {
     KDNode *pool;   /* arena backing all nodes (single allocation) */
 } KDTree;
 
-/*
- * Report callback. Returns 1 to continue, 0 to stop early.
- * dist2 is the squared distance between a and b (avoid a sqrt per pair).
- */
-typedef int (*PairCB)(Object *a, Object *b, double dist2, void *ud);
+/* PairCB (the report callback) is shared, see astro.h. */
 
 KDTree *kd_build(const Catalog *c);
 void    kd_free(KDTree *t);
@@ -44,5 +41,10 @@ size_t  kd_range(const KDTree *t, Vec3 center, double radius, PairCB cb, void *u
  * and emit each unordered pair exactly once (a->id < b->id). O(n log n).
  */
 size_t  kd_screen(const KDTree *t, const Catalog *c, double threshold, PairCB cb, void *ud);
+
+/* Engine-vtable shim: run kd_build/kd_screen through the Engine interface. */
+EngineImpl *kd_engine_build(const Catalog *c, void *params);
+void        kd_engine_free(EngineImpl *e);
+size_t      kd_engine_screen(EngineImpl *e, const Catalog *c, double threshold, PairCB cb, void *ud);
 
 #endif /* KD_TREE_H */

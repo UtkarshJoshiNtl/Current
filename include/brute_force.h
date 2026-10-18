@@ -9,8 +9,13 @@
 #define BRUTE_FORCE_H
 
 #include "catalog.h"
-#include "kd_tree.h"   /* PairCB */
+#include "engine.h"
 
 size_t bf_screen(const Catalog *c, double threshold, PairCB cb, void *ud);
+
+/* Engine-vtable shim: brute force as a pluggable engine (no state). */
+EngineImpl *bf_engine_build(const Catalog *c, void *params);
+void        bf_engine_free(EngineImpl *e);
+size_t      bf_engine_screen(EngineImpl *e, const Catalog *c, double threshold, PairCB cb, void *ud);
 
 #endif /* BRUTE_FORCE_H */

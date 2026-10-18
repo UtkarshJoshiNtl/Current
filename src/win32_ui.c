@@ -28,6 +28,12 @@
 #define ID_STOP    1002
 #define ID_RESET   1003
 #define ID_STATUS  1004
+#define ID_ENGL    1010
+#define ID_ENGR    1011
+#define ID_ROC     1020
+#define ID_CFG     1100   /* ID_CFG + slot*2 (+0 minus, +1 plus) */
+
+#define N_CFG      4      /* dt, thr, mu, cd  */
 
 #define SCALE_PX   112.0
 #define EARTH_PX   16
@@ -71,6 +77,11 @@ typedef struct {
     Sim              *sim[2];
     const GuiOptions *opt;
     HWND              hStart, hStop, hReset;
+    HWND              hEng[2];          /* engine combo boxes */
+    HWND              hCfgMinus[N_CFG];
+    HWND              hCfgLabel[N_CFG];
+    HWND              hCfgPlus[N_CFG];
+    HWND              hRoc;
     HWND              hCap[2];
     HWND              hView[2];
     HWND              hStat[2][3];
@@ -281,6 +292,24 @@ static void update_stats(void)
                  s->steps ? s->screen_ms_total / s->steps : 0.0);
         SetWindowTextA(g_app.hStat[i][2], line);
     }
+
+    /* captions follow the selected engines */
+    for (int i = 0; i < 2; i++) {
+        Sim *s = g_app.sim[i];
+        snprintf(line, sizeof line, "%s    %s",
+                 s->eng.vt ? s->eng.vt->label : "NONE",
+                 s->eng.vt ? s->eng.vt->cx : "");
+        SetWindowTextA(g_app.hCap[i], line);
+    }
+
+    /* config labels */
+    Sim *s = g_app.sim[0];
+    static const char *nm[N_CFG] = { "dt", "thr", "mu", "cd" };
+    double v[N_CFG] = { s->dt, s->threshold, s->mu, s->collision_dist };
+    for (int k = 0; k < N_CFG; k++) {
+        snprintf(line, sizeof line, "%s %.4f", nm[k], v[k]);
+        SetWindowTextA(g_app.hCfgLabel[k], line);
+    }
 }
 
 /* ---- main window --------------------------------------------------------- */
@@ -296,6 +325,39 @@ static void create_controls(HWND h)
     g_app.hReset = CreateWindowExA(0, "BUTTON", "Reset",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
         0, 0, 10, 10, h, (HMENU)(INT_PTR)ID_RESET, NULL, NULL);
+
+    /* engine pickers (native combo boxes) */
+    for (int i = 0; i < 2; i++) {
+        g_app.hEng[i] = CreateWindowExA(0, "COMBOBOX", "",
+            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+            0, 0, 10, 100, h,
+            (HMENU)(INT_PTR)(i == 0 ? ID_ENGL : ID_ENGR), NULL, NULL);
+        for (int e = 0; e < ENG_COUNT; e++) {
+            const EngineVTable *vt = engine_vtable((EngineType)e);
+            if (vt) SendMessageA(g_app.hEng[i], CB_ADDSTRING, 0, (LPARAM)vt->label);
+        }
+        EngineType cur = g_app.sim[i]->eng_type;
+        SendMessageA(g_app.hEng[i], CB_SETCURSEL, (WPARAM)cur, 0);
+    }
+
+    /* config steppers: [-] value [+] for dt / threshold / mu / collision */
+    static const char *cfg_name[N_CFG] = { "dt", "thr", "mu", "cd" };
+    for (int s = 0; s < N_CFG; s++) {
+        g_app.hCfgMinus[s] = CreateWindowExA(0, "BUTTON", "-",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            0, 0, 10, 10, h, (HMENU)(INT_PTR)(ID_CFG + s * 2), NULL, NULL);
+        g_app.hCfgLabel[s] = CreateWindowExA(0, "STATIC", cfg_name[s],
+            WS_CHILD | WS_VISIBLE | SS_CENTER,
+            0, 0, 10, 10, h, NULL, NULL, NULL);
+        g_app.hCfgPlus[s] = CreateWindowExA(0, "BUTTON", "+",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            0, 0, 10, 10, h, (HMENU)(INT_PTR)(ID_CFG + s * 2 + 1), NULL, NULL);
+    }
+    g_app.hRoc = CreateWindowExA(0, "BUTTON", "ROC",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        0, 0, 10, 10, h, (HMENU)(INT_PTR)ID_ROC, NULL, NULL);
+    SendMessageA(g_app.hRoc, BM_SETCHECK,
+                 g_app.sim[0]->remove_on_collision ? BST_CHECKED : BST_UNCHECKED, 0);
 
     static const char *caps[2] = { "KD-tree    O(n log n)", "Brute force    O(n^2)" };
     for (int i = 0; i < 2; i++) {
@@ -341,9 +403,28 @@ static void layout(HWND h)
     int bw = 88, bh = 25, by = 8, bx = 10;
     MoveWindow(g_app.hStart, bx, by, bw, bh, TRUE); bx += bw + 8;
     MoveWindow(g_app.hStop,  bx, by, bw, bh, TRUE); bx += bw + 8;
-    MoveWindow(g_app.hReset, bx, by, bw, bh, TRUE);
+    MoveWindow(g_app.hReset, bx, by, bw, bh, TRUE); bx += bw + 16;
 
-    int top = by + bh + 10;
+    /* engine combos (row 1) */
+    int comboW = 170;
+    MoveWindow(g_app.hEng[0], bx, by, comboW, bh + 120, TRUE); bx += comboW + 12;
+    MoveWindow(g_app.hEng[1], bx, by, comboW, bh + 120, TRUE); bx += comboW + 16;
+
+    /* ROC toggle (row 1, right of combos) */
+    MoveWindow(g_app.hRoc, bx, by + 3, 90, bh - 4, TRUE);
+
+    /* config steppers (row 2) */
+    int cy = by + bh + 6;
+    int slotW = 24, valW = 78, gap = 4;
+    int cx0 = 10;
+    for (int s = 0; s < N_CFG; s++) {
+        MoveWindow(g_app.hCfgMinus[s], cx0, cy, slotW, bh, TRUE);
+        MoveWindow(g_app.hCfgLabel[s], cx0 + slotW, cy, valW, bh, TRUE);
+        MoveWindow(g_app.hCfgPlus[s],  cx0 + slotW + valW, cy, slotW, bh, TRUE);
+        cx0 += slotW * 2 + valW + gap + 8;
+    }
+
+    int top = cy + bh + 10;
     int margin = 10;
     int panelW = (W - 3 * margin) / 2;
     int availH = H - sh - top - 10;
@@ -379,6 +460,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
     switch (m) {
     case WM_CREATE:
         create_controls(h);
+        update_stats();
         return 0;
 
     case WM_SIZE:
@@ -390,10 +472,10 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
             if (!g_app.paused) {
                 g_yaw += 0.0035;
                 step_panels();
-                update_stats();
                 InvalidateRect(g_app.hView[0], NULL, FALSE);
                 InvalidateRect(g_app.hView[1], NULL, FALSE);
             }
+            update_stats();
             g_app.frames++;
             if (g_app.opt->max_frames > 0 && g_app.frames >= g_app.opt->max_frames)
                 PostQuitMessage(0);
@@ -401,6 +483,16 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
         return 0;
 
     case WM_COMMAND:
+        /* engine pickers (combo boxes) */
+        if (HIWORD(w) == CBN_SELCHANGE) {
+            int idx = LOWORD(w) - ID_ENGL;
+            if (idx >= 0 && idx < 2) {
+                int sel = (int)SendMessageA(g_app.hEng[idx], CB_GETCURSEL, 0, 0);
+                if (sel >= 0 && sel < ENG_COUNT)
+                    sim_set_engine(g_app.sim[idx], (EngineType)sel);
+            }
+            return 0;
+        }
         switch (LOWORD(w)) {
         case ID_START: g_app.paused = 0; break;
         case ID_STOP:  g_app.paused = 1; break;
@@ -409,6 +501,32 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
             g_yaw = 0.0;
             InvalidateRect(g_app.hView[0], NULL, FALSE);
             InvalidateRect(g_app.hView[1], NULL, FALSE);
+            break;
+        case ID_ROC: {
+            int on = (SendMessageA(g_app.hRoc, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            sim_set_remove_on_collision(g_app.sim[0], on);
+            sim_set_remove_on_collision(g_app.sim[1], on);
+            break;
+        }
+        default:
+            if (LOWORD(w) >= ID_CFG && LOWORD(w) < ID_CFG + N_CFG * 2) {
+                int slot = (LOWORD(w) - ID_CFG) / 2;
+                int plus = (LOWORD(w) - ID_CFG) % 2;
+                double f = plus ? 1.5 : (1.0 / 1.5);
+                Sim *s = g_app.sim[0];
+                switch (slot) {
+                case 0: { double v = s->dt * f;
+                          sim_set_dt(g_app.sim[0], v); sim_set_dt(g_app.sim[1], v); break; }
+                case 1: { double v = s->threshold * f;
+                          sim_set_threshold(g_app.sim[0], v); sim_set_threshold(g_app.sim[1], v); break; }
+                case 2: { double v = s->mu * f;
+                          sim_set_mu(g_app.sim[0], v); sim_set_mu(g_app.sim[1], v); break; }
+                case 3: { double v = s->collision_dist * f;
+                          sim_set_collision_dist(g_app.sim[0], v);
+                          sim_set_collision_dist(g_app.sim[1], v); break; }
+                }
+                update_stats();
+            }
             break;
         }
         return 0;

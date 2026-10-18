@@ -41,6 +41,12 @@ static inline double v3dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z 
 static inline double v3len2(Vec3 a) { return v3dot(a, a); }
 static inline double v3len(Vec3 a) { return sqrt(v3len2(a)); }
 
+/*
+ * Pair reporting callback shared by every screening engine. Returns 1 to
+ * continue, 0 to stop early. dist2 is the squared distance (no sqrt per pair).
+ */
+typedef int (*PairCB)(Object *a, Object *b, double dist2, void *ud);
+
 /* axis: 0=x, 1=y, 2=z. Used by the KD-tree split logic. */
 static inline double v3axis(Vec3 v, int axis)
 {

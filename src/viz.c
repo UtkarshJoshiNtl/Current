@@ -29,7 +29,7 @@
 #define WIN_W       1280
 #define WIN_H       720
 #define TITLEBAR_H  32
-#define TOOLBAR_H   44
+#define TOOLBAR_H   80
 #define STATUS_H    26
 #define MARGIN      12
 #define CAPTION_H   26
@@ -340,9 +340,36 @@ static void render_space(SDL_Renderer *r, Sim *s, int cx, int cy)
 
 static int g_mx = -1, g_my = -1, g_mdown = 0;
 
-static Rect btn_start(void) { return (Rect){ 14, TITLEBAR_H + 9, 92, 26 }; }
-static Rect btn_stop(void)  { return (Rect){ 112, TITLEBAR_H + 9, 92, 26 }; }
-static Rect btn_reset(void) { return (Rect){ 210, TITLEBAR_H + 9, 92, 26 }; }
+static Rect btn_start(void) { return (Rect){ 14, TITLEBAR_H + 6, 92, 26 }; }
+static Rect btn_stop(void)  { return (Rect){ 112, TITLEBAR_H + 6, 92, 26 }; }
+static Rect btn_reset(void) { return (Rect){ 210, TITLEBAR_H + 6, 92, 26 }; }
+
+/* engine pickers (row 1) */
+static Rect btn_engL(void)  { return (Rect){ 320, TITLEBAR_H + 6, 190, 26 }; }
+static Rect btn_engR(void)  { return (Rect){ 522, TITLEBAR_H + 6, 190, 26 }; }
+
+/* config steppers (row 2): [-] value [+] */
+#define CFG_Y    (TITLEBAR_H + 44)
+#define CFG_W    26
+#define CFG_VALW 78
+#define CFG_GAP  6
+
+static Rect cfg_minus(int slot)
+{
+    return (Rect){ 14 + slot * (CFG_W * 2 + CFG_VALW + CFG_GAP), CFG_Y, CFG_W, 26 };
+}
+static Rect cfg_label(int slot)
+{
+    Rect m = cfg_minus(slot);
+    return (Rect){ m.x + CFG_W, CFG_Y, CFG_VALW, 26 };
+}
+static Rect cfg_plus(int slot)
+{
+    Rect m = cfg_minus(slot);
+    return (Rect){ m.x + CFG_W + CFG_VALW, CFG_Y, CFG_W, 26 };
+}
+
+enum { SLOT_DT = 0, SLOT_THR, SLOT_MU, SLOT_CD, SLOT_ROC, SLOT_COUNT };
 
 static int in_rect(Rect b, int x, int y)
 {
@@ -413,30 +440,71 @@ static void draw_button(SDL_Renderer *r, Rect b, const char *label, int disabled
     text(r, b.x + (b.w - tw) / 2, b.y + (b.h - 16) / 2 + (pressed ? 1 : 0), 14, label, tc);
 }
 
-static void draw_toolbar(SDL_Renderer *r, int paused)
+/* small centered label over a value box (read-only display) */
+static void draw_value(SDL_Renderer *r, Rect b, const char *label)
+{
+    setcol(r, C_FIELD);
+    SDL_Rect R = { b.x, b.y, b.w, b.h };
+    SDL_RenderFillRect(r, &R);
+    sunken(r, b.x, b.y, b.w, b.h);
+    int tw = text_w(14, label);
+    text(r, b.x + (b.w - tw) / 2, b.y + (b.h - 16) / 2, 14, label, C_INK);
+}
+
+static const char *eng_label(Sim *s)
+{
+    return s->eng.vt ? s->eng.vt->label : "NONE";
+}
+
+static void draw_toolbar(SDL_Renderer *r, Sim *left, Sim *right, int paused)
 {
     rectf(r, 0, TITLEBAR_H, WIN_W, TOOLBAR_H, C_CLIENT);
     hline(r, 0, TITLEBAR_H + TOOLBAR_H - 1, WIN_W, (const Uint8[]){ 206, 206, 206 });
 
+    /* row 1: transport + engine pickers */
     draw_button(r, btn_start(), "Start", !paused);
     draw_button(r, btn_stop(),  "Stop",  paused);
     draw_button(r, btn_reset(), "Reset", 0);
 
+    char lab[64];
+    snprintf(lab, sizeof lab, "L: %s", eng_label(left));
+    draw_button(r, btn_engL(), lab, 0);
+    snprintf(lab, sizeof lab, "R: %s", eng_label(right));
+    draw_button(r, btn_engR(), lab, 0);
+
     const char *state = paused ? "Paused" : "Running";
     text(r, WIN_W - text_w(14, state) - 12, TITLEBAR_H + 15, 14, state, C_INK_SOFT);
+
+    /* row 2: configuration steppers (dt, threshold, mu, collision, ROC) */
+    static const char *names[SLOT_COUNT] = { "dt", "thr", "mu", "cd", "ROC" };
+    for (int s = 0; s < SLOT_ROC; s++) {
+        draw_button(r, cfg_minus(s), "-", 0);
+        snprintf(lab, sizeof lab, "%s %.4f", names[s],
+                 s == SLOT_DT  ? left->dt :
+                 s == SLOT_THR ? left->threshold :
+                 s == SLOT_MU  ? left->mu : left->collision_dist);
+        draw_value(r, cfg_label(s), lab);
+        draw_button(r, cfg_plus(s), "+", 0);
+    }
+    /* ROC toggle spans minus+label+plus of its slot */
+    Rect m = cfg_minus(SLOT_ROC), p = cfg_plus(SLOT_ROC);
+    Rect roc = { m.x, CFG_Y, (p.x + p.w) - m.x, 26 };
+    snprintf(lab, sizeof lab, "ROC %s", left->remove_on_collision ? "ON" : "OFF");
+    draw_button(r, roc, lab, 0);
 }
 
-static void draw_child(SDL_Renderer *r, Sim *s, Rect ch, const char *caption,
-                       const char *complexity)
+static void draw_child(SDL_Renderer *r, Sim *s, Rect ch)
 {
     rectf(r, ch.x, ch.y, ch.w, ch.h, C_CLIENT);
     frame(r, ch.x, ch.y, ch.w, ch.h, (const Uint8[]){ 200, 205, 212 });
 
     vgrad(r, ch.x + 1, ch.y + 1, ch.w - 2, CAPTION_H, C_CAP_TOP, C_CAP_BOT);
     hline(r, ch.x + 1, ch.y + CAPTION_H, ch.w - 2, (const Uint8[]){ 196, 208, 220 });
-    text(r, ch.x + 12, ch.y + (CAPTION_H - 16) / 2, 14, caption, C_INK);
-    int cw = text_w(13, complexity);
-    text(r, ch.x + ch.w - cw - 12, ch.y + (CAPTION_H - 15) / 2, 13, complexity, C_INK_SOFT);
+    const char *cap = eng_label(s);
+    text(r, ch.x + 12, ch.y + (CAPTION_H - 16) / 2, 14, cap, C_INK);
+    const char *cx = s->eng.vt ? s->eng.vt->cx : "";
+    int cw = text_w(13, cx);
+    text(r, ch.x + ch.w - cw - 12, ch.y + (CAPTION_H - 15) / 2, 13, cx, C_INK_SOFT);
 
     Rect v = { ch.x + CHILD_PAD, ch.y + CAPTION_H + CHILD_PAD,
                ch.w - 2 * CHILD_PAD,
@@ -508,8 +576,9 @@ int gui_run(Sim *left, Sim *right, const GuiOptions *opt)
     text_init();
 
     char title[160];
-    snprintf(title, sizeof title, "Astrosis-C   -   %s   (KD-tree vs brute force)",
-             opt->scene_name ? opt->scene_name : "simulation");
+    snprintf(title, sizeof title, "Astrosis-C   -   %s   (%s vs %s)",
+             opt->scene_name ? opt->scene_name : "simulation",
+             engine_type_name(opt->engine_left), engine_type_name(opt->engine_right));
 
     SDL_Window *win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED,
                                        SDL_WINDOWPOS_CENTERED, WIN_W, WIN_H, SDL_WINDOW_SHOWN);
@@ -527,6 +596,12 @@ int gui_run(Sim *left, Sim *right, const GuiOptions *opt)
     const double budget = opt->budget_ms;
     const size_t max_steps_per_frame = 200000;
 
+    /* engine pickers start from whatever the driver selected */
+    EngineType el = opt->engine_left, er = opt->engine_right;
+
+    /* apply a config value to BOTH sims so parity is preserved */
+#define APPLY2(fn, val) do { fn(left, val); fn(right, val); } while (0)
+
     int cw = (WIN_W - 3 * MARGIN) / 2;
     int cy0 = TITLEBAR_H + TOOLBAR_H + MARGIN;
     int ch = WIN_H - STATUS_H - MARGIN - cy0;
@@ -541,18 +616,66 @@ int gui_run(Sim *left, Sim *right, const GuiOptions *opt)
             if (e.type == SDL_QUIT) running = 0;
             else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 g_mdown = 1;
-                if (in_rect(win_close(), e.button.x, e.button.y)) running = 0;
-                else if (in_rect(btn_start(), e.button.x, e.button.y)) paused = 0;
-                else if (in_rect(btn_stop(),  e.button.x, e.button.y)) paused = 1;
-                else if (in_rect(btn_reset(), e.button.x, e.button.y)) {
+                int mx = e.button.x, my = e.button.y;
+                if (in_rect(win_close(), mx, my)) running = 0;
+                else if (in_rect(btn_start(), mx, my)) paused = 0;
+                else if (in_rect(btn_stop(),  mx, my)) paused = 1;
+                else if (in_rect(btn_reset(), mx, my)) {
                     if (opt->on_reset) opt->on_reset(opt->reset_ud);
                     g_yaw = 0.0;
+                }
+                else if (in_rect(btn_engL(), mx, my)) {
+                    el = (EngineType)((el + 1) % ENG_COUNT);
+                    sim_set_engine(left, el);
+                }
+                else if (in_rect(btn_engR(), mx, my)) {
+                    er = (EngineType)((er + 1) % ENG_COUNT);
+                    sim_set_engine(right, er);
+                }
+                else {
+                    /* config steppers: [slot] = which value, +/- adjusts */
+                    for (int slot = 0; slot < SLOT_COUNT; slot++) {
+                        int minus = in_rect(cfg_minus(slot), mx, my);
+                        int plus  = in_rect(cfg_plus(slot), mx, my);
+                        int is_roc = (slot == SLOT_ROC);
+                        if (!is_roc && !minus && !plus) continue;
+                        if (is_roc) {
+                            if (in_rect(cfg_minus(slot), mx, my) ||
+                                in_rect(cfg_label(slot), mx, my) ||
+                                in_rect(cfg_plus(slot), mx, my)) {
+                                APPLY2(sim_set_remove_on_collision,
+                                       !left->remove_on_collision);
+                            }
+                            continue;
+                        }
+                        double f = plus ? 1.5 : (1.0 / 1.5);
+                        switch (slot) {
+                            case SLOT_DT:  APPLY2(sim_set_dt,  left->dt * f);            break;
+                            case SLOT_THR: APPLY2(sim_set_threshold, left->threshold * f); break;
+                            case SLOT_MU:  APPLY2(sim_set_mu,  left->mu * f);            break;
+                            case SLOT_CD:  APPLY2(sim_set_collision_dist,
+                                                  left->collision_dist * f);             break;
+                        }
+                    }
                 }
             } else if (e.type == SDL_MOUSEBUTTONUP) {
                 g_mdown = 0;
             } else if (e.type == SDL_KEYDOWN) {
                 if (e.key.keysym.sym == SDLK_ESCAPE) running = 0;
                 else if (e.key.keysym.sym == SDLK_SPACE) paused = !paused;
+                else if (e.key.keysym.sym == SDLK_LEFTBRACKET) {   /* [ ] cycle engines */
+                    er = (EngineType)((er + ENG_COUNT - 1) % ENG_COUNT);
+                    sim_set_engine(right, er);
+                } else if (e.key.keysym.sym == SDLK_RIGHTBRACKET) {
+                    er = (EngineType)((er + 1) % ENG_COUNT);
+                    sim_set_engine(right, er);
+                } else if (e.key.keysym.sym == SDLK_COMMA) {
+                    el = (EngineType)((el + ENG_COUNT - 1) % ENG_COUNT);
+                    sim_set_engine(left, el);
+                } else if (e.key.keysym.sym == SDLK_PERIOD) {
+                    el = (EngineType)((el + 1) % ENG_COUNT);
+                    sim_set_engine(left, el);
+                }
             }
         }
 
@@ -570,9 +693,9 @@ int gui_run(Sim *left, Sim *right, const GuiOptions *opt)
 
         rectf(ren, 0, 0, WIN_W, WIN_H, C_CLIENT);
         draw_titlebar(ren, title);
-        draw_toolbar(ren, paused);
-        draw_child(ren, left,  childL, "KD-tree",    "O(n log n)");
-        draw_child(ren, right, childR, "Brute force", "O(n^2)");
+        draw_toolbar(ren, left, right, paused);
+        draw_child(ren, left,  childL);
+        draw_child(ren, right, childR);
         draw_statusbar(ren, opt->scene_name ? opt->scene_name : "", opt->budget_ms);
 
         SDL_RenderPresent(ren);
@@ -596,8 +719,9 @@ int gui_run(Sim *left, Sim *right, const GuiOptions *opt)
     text_quit();
     SDL_Quit();
 
-    printf("final: KD steps=%lu   brute steps=%lu   (%.1fx more)\n",
-           (unsigned long)left->steps, (unsigned long)right->steps,
+    printf("final: %s steps=%lu   %s steps=%lu   (%.1fx more)\n",
+           engine_type_name(left->eng_type), (unsigned long)left->steps,
+           engine_type_name(right->eng_type), (unsigned long)right->steps,
            right->steps ? (double)left->steps / (double)right->steps : 0.0);
     return 0;
 }

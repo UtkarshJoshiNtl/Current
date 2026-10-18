@@ -18,3 +18,23 @@ size_t bf_screen(const Catalog *c, double threshold, PairCB cb, void *ud)
     }
     return pairs;
 }
+
+/* ------------------------------------------------- Engine vtable shim */
+
+EngineImpl *bf_engine_build(const Catalog *c, void *params)
+{
+    (void)c;
+    (void)params;
+    return (EngineImpl *)1;   /* stateless: non-NULL marker */
+}
+
+void bf_engine_free(EngineImpl *e)
+{
+    (void)e;
+}
+
+size_t bf_engine_screen(EngineImpl *e, const Catalog *c, double threshold, PairCB cb, void *ud)
+{
+    (void)e;
+    return bf_screen(c, threshold, cb, ud);
+}

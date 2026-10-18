@@ -24,15 +24,19 @@ It ships a two-panel live view: the identical simulation runs twice, each panel 
 
 ## Architecture
 
-| Module | File | Owner | Structure / logic | Purpose |
-|-------:|------|:-----:|-------------------|---------|
-| 1 | `src/catalog.c` | Member 1 | **Doubly linked list** | O(1) insert / remove registry of live objects (launches and de-orbits) |
-| 2 | `src/physics.c` | Member 2 | Minimal 2-body motion | Keeps objects moving: linear drift or central gravity |
-| 3 | `src/kd_tree.c` | DS | **3D KD-tree** | Recursive space partitioning + radius pruning: O(n log n) build, O(log n) query |
-| 4 | `src/brute_force.c` | DS | **Array-matrix scan** | O(n^2) baseline |
-| 5 | `src/grid.c` | DS | **Uniform grid / spatial hash** | Cell binning + neighbor queries |
-| 6 | `src/octree.c` | DS | **Loose octree** | Hierarchical space partitioning with loose bounds |
-| 7 | `src/bvh.c` | DS | **AABB BVH** | Object-partitioning bounding volume hierarchy |
+| Module | File | Structure / logic | Purpose |
+|-------:|------|-------------------|---------|
+| 1 | `src/catalog.c` | **Doubly linked list** | O(1) insert / remove registry of live objects (launches and de-orbits) |
+| 2 | `src/physics.c` | Minimal 2-body motion | Keeps objects moving: linear drift or central gravity |
+| 3 | `src/kd_tree.c` | **3D KD-tree** | Recursive space partitioning + radius pruning: O(n log n) build, O(log n) query |
+| 4 | `src/brute_force.c` | **Array-matrix scan** | O(n^2) baseline |
+| 5 | `src/grid.c` | **Uniform grid** | Cell binning + neighbour shell queries, O(n + k) |
+| 6 | `src/octree.c` | **Loose octree** | Hierarchical space partitioning with loose bounds |
+| 7 | `src/bvh.c` | **AABB BVH** | Object-partitioning bounding volume hierarchy |
+
+All five screeners plug in through one small vtable (`src/engine.c`,
+`include/engine.h`), so `sim.c` and both front-ends are engine-agnostic:
+picking two engines is just choosing two vtable pointers.
 
 Supporting files: `scenes.c` (fixed scenarios), `sim.c` (an "engine" = catalog +
 physics + one screening algorithm), `main.c` (driver), plus one of two GUI
@@ -93,20 +97,21 @@ the scene from the same seed, so the two panels always restart identically.
 
 ## Benchmark
 
-`./astro --bench --steps 300 --engine-left kd --engine-right brute` (identical pair sets verified on every row). Engine names: `kd`, `brute`, `grid`, `octree`, `bvh`.
+`./astro --bench --steps 300 --engine-left kd --engine-right brute` (identical pair sets verified on every row). Engine names: `kd`, `brute`, `grid`, `octree`, `bvh`; any pair works, e.g. `--engine-left grid --engine-right bvh`.
 
 ```
   close-encounter    N=2     steps=300    pairs=0         kd=    0.22 ms  brute=     0.20 ms  x   0.9  PARITY OK
-  shell-crossing     N=120   steps=300    pairs=9287      kd=    6.20 ms  brute=     3.94 ms  x   0.6  PARITY OK
-  dense-ring         N=400   steps=300    pairs=2418      kd=   26.73 ms  brute=    36.11 ms  x   1.4  PARITY OK
-  collision-cascade  N=80    steps=300    pairs=2029      kd=    2.82 ms  brute=     1.58 ms  x   0.6  PARITY OK
-  debris-field       N=3000  steps=300    pairs=43397     kd=  411.35 ms  brute=  3240.68 ms  x   7.9  PARITY OK
-  kessler            N=15000 steps=300    pairs=279978    kd= 3212.49 ms  brute= 98424.07 ms  x  30.6  PARITY OK
+  shell-crossing     N=120   steps=300    pairs=9287      kd=    5.59 ms  brute=     3.43 ms  x   0.6  PARITY OK
+  dense-ring         N=400   steps=300    pairs=2418      kd=   25.01 ms  brute=    44.70 ms  x   1.8  PARITY OK
+  collision-cascade  N=80    steps=300    pairs=2029      kd=    2.61 ms  brute=     1.48 ms  x   0.6  PARITY OK
+  debris-field       N=3000  steps=300    pairs=43397     kd=  359.97 ms  brute=  2437.03 ms  x   6.8  PARITY OK
+  kessler            N=15000 steps=300    pairs=279978    kd= 2765.36 ms  brute= 85344.57 ms  x  30.9  PARITY OK
 ```
 
-The `PARITY OK` flag means both algorithms reported the exact same set of
-conjunctions and collisions, so the comparison is measuring speed, not
-correctness — the benchmark doubles as the test suite.
+All five engines agree on every scene (`PARITY OK`), including the
+collision-cascade scene where objects are deleted mid-run — so any engine
+pairing measures speed, never correctness. The benchmark doubles as the test
+suite.
 
 ## Why the KD-tree wins (and when it doesn't)
 
@@ -130,17 +135,32 @@ the large scenes to isolate the search cost.
 ## CLI options (highlights)
 
 ```text
---engine-left <kd|brute|grid|octree|bvh>  engine for left panel (default kd)
---engine-right <kd|brute|grid|octree|bvh> engine for right panel (default brute)
---dt <f>             step size / timestep
---mu <f>             gravity constant
---threshold <f>      conjunction distance
---collision-dist <f> override collision distance
+--engine-left <kd|brute|grid|octree|bvh>   left panel engine  (default kd)
+--engine-right <kd|brute|grid|octree|bvh>  right panel engine (default brute)
+--dt <f>                  step size / timestep (default 0.010)
+--mu <f>                  gravity constant (default 1.0)
+--threshold <f>           conjunction distance (scene default)
+--collision-dist <f>      contact distance (scene default)
 --remove-on-collision <0|1>
---grid-cell <f>      grid cell size (0=auto)
---octree-loose <f>   loose factor (>=1.0)
---octree-max-depth <i>
---octree-min-cell <f>
---bvh-max-leaf <i>
---bvh-sah <0|1>
+--seed <n>                RNG seed
+--bench --steps <n>       headless parity/timing table
+--grid-cell <f>           grid cell size (0 = auto from density + threshold)
+--octree-loose <f>        loose-octree factor (default 2.0)
+--octree-depth <n>        max octree depth (default 12)
+--bvh-leaf <n>            objects per BVH leaf (default 4)
 ```
+
+## Live controls (in the window)
+
+| Control | SDL (Linux/macOS) | Win32 (Windows) |
+|---|---|---|
+| Engine per panel | `L:` / `R:` buttons cycle kd → brute → grid → octree → bvh | native combo boxes |
+| Step size (dt) | `-` / `+` stepper | `-` / `+` buttons |
+| Threshold, mu, collision dist | `-` / `+` steppers | `-` / `+` buttons |
+| Remove-on-collision | `ROC ON/OFF` toggle | checkbox |
+| Transport | START / STOP / RESET | same |
+| Pause / quit | SPACE / ESC | same |
+| Cycle engines by keyboard | `,` `.` (left), `[` `]` (right) | — |
+
+Configuration changes apply to **both** panels, so the two worlds stay
+identical and the PARITY guarantee holds live as well as in `--bench`.

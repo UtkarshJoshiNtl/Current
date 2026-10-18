@@ -27,6 +27,7 @@ LDLIBS += $(SDL_LIBS) $(TTF_LIBS) -lm
 # Explicit list: the SDL front-end (viz.c) is used on Linux/macOS. The native
 # Win32 front-end (win32_ui.c) is built only by build.bat on Windows.
 SRC := src/catalog.c src/physics.c src/kd_tree.c src/brute_force.c \
+       src/engine.c src/grid.c src/octree.c src/bvh.c \
        src/scenes.c src/sim.c src/viz.c src/main.c
 OBJ := $(patsubst src/%.c,obj/%.o,$(SRC))
 BIN := astro
