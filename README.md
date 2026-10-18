@@ -6,9 +6,7 @@ system: it is a small, sharp demonstration of one computer-science trade-off —
 **custom pointer-based spatial structures beat linear scanning as the number of
 tracked objects grows.**
 
-It ships a two-panel live view: the identical simulation runs twice, once
-screened with a 3D KD-tree and once with a brute-force nested loop, with a step
-counter under each panel so the performance gap is visible in real time.
+It ships a two-panel live view: the identical simulation runs twice, each panel using a selectable spatial index (KD-tree, brute force, uniform grid, loose octree, AABB BVH). Step count, conjunction/collision totals, and per-step screening time are shown under each panel so trade-offs are visible in real time.
 
 ```
  +----------------------------+   +----------------------------+
@@ -30,8 +28,11 @@ counter under each panel so the performance gap is visible in real time.
 |-------:|------|:-----:|-------------------|---------|
 | 1 | `src/catalog.c` | Member 1 | **Doubly linked list** | O(1) insert / remove registry of live objects (launches and de-orbits) |
 | 2 | `src/physics.c` | Member 2 | Minimal 2-body motion | Keeps objects moving: linear drift or central gravity |
-| 3 | `src/kd_tree.c` | Member 3 | **3D KD-tree** | Recursive space partitioning + radius pruning: O(n log n) build, O(log n) query |
-| 4 | `src/brute_force.c` | Member 4 | **Array-matrix scan** | O(n^2) baseline used to prove why the KD-tree is faster |
+| 3 | `src/kd_tree.c` | DS | **3D KD-tree** | Recursive space partitioning + radius pruning: O(n log n) build, O(log n) query |
+| 4 | `src/brute_force.c` | DS | **Array-matrix scan** | O(n^2) baseline |
+| 5 | `src/grid.c` | DS | **Uniform grid / spatial hash** | Cell binning + neighbor queries |
+| 6 | `src/octree.c` | DS | **Loose octree** | Hierarchical space partitioning with loose bounds |
+| 7 | `src/bvh.c` | DS | **AABB BVH** | Object-partitioning bounding volume hierarchy |
 
 Supporting files: `scenes.c` (fixed scenarios), `sim.c` (an "engine" = catalog +
 physics + one screening algorithm), `main.c` (driver), plus one of two GUI
@@ -82,10 +83,7 @@ text, with an embedded 3x5 bitmap font as a no-dependency fallback
 ./astro --bench --steps 500
 ```
 
-The window has **START / STOP / RESET** buttons, two captioned panels, and a
-status bar. On Windows these are genuine Win32 controls (authentic look); on
-Linux the same layout is drawn with SDL2. Each panel shows the same scene and
-differs only in its screening engine. The camera auto-rotates; the central body
+The window has **START / STOP / RESET** buttons, two captioned panels (engine selectable per panel), and a status bar. On Windows these are genuine Win32 controls (authentic look); on Linux the same layout is drawn with SDL2. Each panel shows the same scene and differs only in its screening engine. The camera auto-rotates; the central body
 is a shaded blue-green planet, satellites are small dots, and any pair closer
 than the conjunction threshold is drawn in red with a link. On the
 `collision-cascade` scene, objects that actually touch are highlighted yellow and
@@ -95,7 +93,7 @@ the scene from the same seed, so the two panels always restart identically.
 
 ## Benchmark
 
-`./astro --bench --steps 300` (identical pair sets verified on every row):
+`./astro --bench --steps 300 --engine-left kd --engine-right brute` (identical pair sets verified on every row). Engine names: `kd`, `brute`, `grid`, `octree`, `bvh`.
 
 ```
   close-encounter    N=2     steps=300    pairs=0         kd=    0.22 ms  brute=     0.20 ms  x   0.9  PARITY OK
@@ -127,3 +125,22 @@ Note that when conjunctions are *dense* (a large fraction of all pairs are
 within range), the answer set itself is O(n^2), so no spatial index can be
 asymptotically better — the benchmark deliberately uses sparse thresholds for
 the large scenes to isolate the search cost.
+
+
+## CLI options (highlights)
+
+```text
+--engine-left <kd|brute|grid|octree|bvh>  engine for left panel (default kd)
+--engine-right <kd|brute|grid|octree|bvh> engine for right panel (default brute)
+--dt <f>             step size / timestep
+--mu <f>             gravity constant
+--threshold <f>      conjunction distance
+--collision-dist <f> override collision distance
+--remove-on-collision <0|1>
+--grid-cell <f>      grid cell size (0=auto)
+--octree-loose <f>   loose factor (>=1.0)
+--octree-max-depth <i>
+--octree-min-cell <f>
+--bvh-max-leaf <i>
+--bvh-sah <0|1>
+```

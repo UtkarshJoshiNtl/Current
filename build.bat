@@ -33,7 +33,7 @@ gcc --version
 echo.
 
 set CFLAGS=-std=c11 -O2 -Wall -Wextra -Iinclude
-set SRCS=src\catalog.c src\physics.c src\kd_tree.c src\brute_force.c src\scenes.c src\sim.c src\win32_ui.c src\main.c
+set SRCS=src\catalog.c src\physics.c src\kd_tree.c src\brute_force.c src\engine.c src\grid.c src\octree.c src\bvh.c src\scenes.c src\sim.c src\win32_ui.c src\main.c
 set LIBS=-lcomctl32 -lgdi32 -luser32 -lm
 
 echo [1/2] astro.exe      (console: GUI + --bench) ...
