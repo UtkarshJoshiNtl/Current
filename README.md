@@ -1,166 +1,110 @@
-# Astrosis-C
+# Spatial indexing comparison
 
-A lightweight spatial indexing & conjunction screening engine, written from
-scratch in C11. Astrosis-C is deliberately *not* a multithreaded mission-control
-system: it is a small, sharp demonstration of one computer-science trade-off —
-**custom pointer-based spatial structures beat linear scanning as the number of
-tracked objects grows.**
+This is my C project for a data structures class. It compares several ways to
+find nearby pairs of moving objects. The same starting scene is shown in two
+panels, with a different spatial data structure selected for each one.
 
-It ships a two-panel live view: the identical simulation runs twice, each panel using a selectable spatial index (KD-tree, brute force, uniform grid, loose octree, AABB BVH). Step count, conjunction/collision totals, and per-step screening time are shown under each panel so trade-offs are visible in real time.
+Each panel advances independently. A faster engine can complete more simulation
+steps while the slower one is still working, which makes the difference easy to
+see in the live view. The step counts are therefore expected to differ. Use the
+benchmark when you want both engines to process the same fixed number of steps
+and compare their measured screening time.
 
-```
- +----------------------------+   +----------------------------+
- |      KD TREE  O(N LOG N)   |   |       BRUTE  O(N^2)        |
- |                            |   |                            |
- |          .  .   (earth)    |   |          .  .   (earth)    |
- |        .  o .  .           |   |        .  o .  .           |
- |           .    .           |   |           .    .           |
- |                            |   |                            |
- | STEPS 694                  |   | STEPS 118                  |
- | CONJ 10241   COLL 0        |   | CONJ 10241   COLL 0        |
- | SCREEN 1.21 MS AVG 1.08 MS |   | SCREEN 9.83 MS AVG 9.02 MS |
- +----------------------------+   +----------------------------+
-```
+The simulation uses simple central-gravity orbits and checks for close
+approaches (conjunctions) and collisions. It is a small visual demonstration;
+it is not intended to model real spacecraft or a full N-body gravity problem.
 
-## Architecture
+## What the project compares
 
-| Module | File | Structure / logic | Purpose |
-|-------:|------|-------------------|---------|
-| 1 | `src/catalog.c` | **Doubly linked list** | O(1) insert / remove registry of live objects (launches and de-orbits) |
-| 2 | `src/physics.c` | Minimal 2-body motion | Keeps objects moving: linear drift or central gravity |
-| 3 | `src/kd_tree.c` | **3D KD-tree** | Recursive space partitioning + radius pruning: O(n log n) build, O(log n) query |
-| 4 | `src/brute_force.c` | **Array-matrix scan** | O(n^2) baseline |
-| 5 | `src/grid.c` | **Uniform grid** | Cell binning + neighbour shell queries, O(n + k) |
-| 6 | `src/octree.c` | **Loose octree** | Hierarchical space partitioning with loose bounds |
-| 7 | `src/bvh.c` | **AABB BVH** | Object-partitioning bounding volume hierarchy |
+| Structure | How it is used |
+|---|---|
+| KD-tree | Splits 3D space into regions to skip distant objects. |
+| Brute force | Checks every possible pair; serves as the simple baseline. |
+| Uniform grid | Groups objects into cells and checks nearby cells. |
+| Loose octree | Subdivides 3D space into nested regions. |
+| AABB BVH | Groups objects in bounding boxes to prune pair checks. |
 
-All five screeners plug in through one small vtable (`src/engine.c`,
-`include/engine.h`), so `sim.c` and both front-ends are engine-agnostic:
-picking two engines is just choosing two vtable pointers.
+The simulation core uses a catalog to track objects, applies simple motion,
+and passes nearby-pair screening through a shared engine interface. The Windows
+front end uses native Win32 controls and GDI; the SDL front end is available on
+Linux and macOS.
 
-Supporting files: `scenes.c` (fixed scenarios), `sim.c` (an "engine" = catalog +
-physics + one screening algorithm), `main.c` (driver), plus one of two GUI
-front-ends: `viz.c` (SDL2) on Linux/macOS, `win32_ui.c` (native Win32) on Windows.
+## Build and run
 
-## Build
+### Windows
 
-### Linux / macOS
-Requires a C11 compiler and SDL2 development headers.
-
-```sh
-make            # builds ./astro
-./astro         # run the two-panel visual
-./astro --bench # headless timing table
-make debug      # ASan/UBSan build (valgrind not required)
-```
-
-### Windows (MinGW-w64 / MSYS2)
-The Windows build is **dependency-free**: it uses the native Win32 API (real
-`BUTTON`/`STATIC` controls, a status bar, the system font) and GDI for the space
-view, so **SDL2 is not required**.
+Install the MinGW-w64 compiler (for example through MSYS2), then run:
 
 ```bat
-:: from a "MSYS2 MINGW64" shell or cmd.exe with gcc on PATH
 build.bat
 ```
 
-* MSYS2: `pacman -S mingw-w64-x86_64-gcc`, then run `build.bat`.
+This creates `astro_gui.exe` for opening the visual directly and `astro.exe`
+for running the visual or command-line benchmark.
 
-The build produces two executables:
-* `astro_gui.exe` — windowed, no console (double-click to run the visual).
-* `astro.exe` — console, so `astro.exe --bench` prints its table (also opens the GUI).
+### Linux or macOS
 
-The shared core is standard C11 and POSIX-free (no `unistd.h`, no `getopt`, no
-`ioctl`); the console stays attached so `astro.exe --bench` still prints its
-table. On Linux the optional `SDL2_ttf` library gives anti-aliased system-font
-text, with an embedded 3x5 bitmap font as a no-dependency fallback
-(`-DASTRO_NO_TTF` forces it).
-
-## Run
+Install a C11 compiler and SDL2 development files, then run:
 
 ```sh
-./astro                          # default scene: debris-field (3000 objects)
-./astro --scene kessler          # 15,000 objects
-./astro --scene collision-cascade
-./astro --shot frame.bmp         # save the final frame (SDL front-end)
-./astro --list-scenes
-./astro --bench --steps 500
+make
+./astro
 ```
 
-The window has **START / STOP / RESET** buttons, two captioned panels (engine selectable per panel), and a status bar. On Windows these are genuine Win32 controls (authentic look); on Linux the same layout is drawn with SDL2. Each panel shows the same scene and differs only in its screening engine. The camera auto-rotates; the central body
-is a shaded blue-green planet, satellites are small dots, and any pair closer
-than the conjunction threshold is drawn in red with a link. On the
-`collision-cascade` scene, objects that actually touch are highlighted yellow and
-then **removed from the catalog** (an O(1) linked-list delete). RESET rebuilds
-the scene from the same seed, so the two panels always restart identically.
-**ESC** quits, **SPACE** toggles pause.
+The SDL2_ttf library is optional. Without it, the program uses its built-in
+bitmap font.
+
+## Using the Windows window
+
+- **Start**, **Stop**, and **Reset** control the simulation. Reset returns both
+  panels to the same starting scene.
+- Each panel has its own engine selector above the viewport. Changing one does
+  not change the other.
+- Hover over controls and panel headings for short explanations.
+- **Remove on collision** controls whether colliding objects are removed.
+- The counters show the number of simulation steps, close conjunctions, and
+  collisions recorded by that panel.
+- Press **Space** to pause or resume. Press **Esc** to close the window.
+
+The two panels use the same scene and starting seed, but they advance at
+independent speeds. Their counters describe their own progress.
 
 ## Benchmark
 
-`./astro --bench --steps 300 --engine-left kd --engine-right brute` (identical pair sets verified on every row). Engine names: `kd`, `brute`, `grid`, `octree`, `bvh`; any pair works, e.g. `--engine-left grid --engine-right bvh`.
+The benchmark runs both chosen engines through the same fixed number of steps
+for each scenario and reports screening time and whether their conjunction and
+collision results agree:
 
-```
-  close-encounter    N=2     steps=300    pairs=0         kd=    0.22 ms  brute=     0.20 ms  x   0.9  PARITY OK
-  shell-crossing     N=120   steps=300    pairs=9287      kd=    5.59 ms  brute=     3.43 ms  x   0.6  PARITY OK
-  dense-ring         N=400   steps=300    pairs=2418      kd=   25.01 ms  brute=    44.70 ms  x   1.8  PARITY OK
-  collision-cascade  N=80    steps=300    pairs=2029      kd=    2.61 ms  brute=     1.48 ms  x   0.6  PARITY OK
-  debris-field       N=3000  steps=300    pairs=43397     kd=  359.97 ms  brute=  2437.03 ms  x   6.8  PARITY OK
-  kessler            N=15000 steps=300    pairs=279978    kd= 2765.36 ms  brute= 85344.57 ms  x  30.9  PARITY OK
+```sh
+./astro --bench --steps 300
+./astro --bench --steps 500 --engine-left kd --engine-right brute
 ```
 
-All five engines agree on every scene (`PARITY OK`), including the
-collision-cascade scene where objects are deleted mid-run — so any engine
-pairing measures speed, never correctness. The benchmark doubles as the test
-suite.
+Available engine IDs are `kd`, `brute`, `grid`, `octree`, and `bvh`. To select a
+single scenario, add `--scene` followed by its ID, such as `--scene debris-field`.
+Use `./astro --list-scenes` to see the available scenarios.
 
-## Why the KD-tree wins (and when it doesn't)
+The benchmark is useful for comparing measured work under the same step count.
+Small scenes can favor brute force because it has little setup overhead. Larger
+scenes can benefit from spatial indexes because they avoid checking every pair.
+When many objects are close together, every method still has to report many
+pairs.
 
-The KD-tree rebuilds every step (objects move) and its cost is included in the
-KD timer, so the comparison is honest. Two regimes exist:
+## Other command-line settings
 
-* **Small N (tens–hundreds).** Pointer chasing, the per-step rebuild, and the
-  loop overhead dominate; brute force over a compact list can win. This is why
-  the small scenes show a factor near 1x or slightly below.
-* **Large N (thousands+).** Brute force performs `n(n-1)/2` distance tests per
-  step — 15,000 objects means ~112 million tests. The KD-tree prunes whole
-  subtrees and checks only local neighbours, giving the 8x–31x wins above. This
-  is the O(n^2) vs O(n log n) crossover, shown empirically.
-
-Note that when conjunctions are *dense* (a large fraction of all pairs are
-within range), the answer set itself is O(n^2), so no spatial index can be
-asymptotically better — the benchmark deliberately uses sparse thresholds for
-the large scenes to isolate the search cost.
-
-
-## CLI options (highlights)
+The GUI uses the selected scene's normal settings to keep the focus on the data
+structures. The command line still exposes simulation and engine tuning for
+experiments:
 
 ```text
---engine-left <kd|brute|grid|octree|bvh>   left panel engine  (default kd)
---engine-right <kd|brute|grid|octree|bvh>  right panel engine (default brute)
---dt <f>                  step size / timestep (default 0.010)
---mu <f>                  gravity constant (default 1.0)
---threshold <f>           conjunction distance (scene default)
---collision-dist <f>      contact distance (scene default)
---remove-on-collision <0|1>
---seed <n>                RNG seed
---bench --steps <n>       headless parity/timing table
---grid-cell <f>           grid cell size (0 = auto from density + threshold)
---octree-loose <f>        loose-octree factor (default 2.0)
---octree-depth <n>        max octree depth (default 12)
---bvh-leaf <n>            objects per BVH leaf (default 4)
+--dt <value>                 simulation step size
+--mu <value>                 central gravity strength
+--threshold <value>          conjunction distance
+--collision-dist <value>     collision distance
+--remove-on-collision <0|1>  whether collisions remove objects
+--seed <number>              starting random seed
+--grid-cell <value>          grid cell size (0 selects automatically)
+--octree-loose <value>       loose-octree factor
+--octree-depth <number>      maximum octree depth
+--bvh-leaf <number>          objects per BVH leaf
 ```
-
-## Live controls (in the window)
-
-| Control | SDL (Linux/macOS) | Win32 (Windows) |
-|---|---|---|
-| Engine per panel | `L:` / `R:` buttons cycle kd → brute → grid → octree → bvh | native combo boxes |
-| Step size (dt) | `-` / `+` stepper | `-` / `+` buttons |
-| Threshold, mu, collision dist | `-` / `+` steppers | `-` / `+` buttons |
-| Remove-on-collision | `ROC ON/OFF` toggle | checkbox |
-| Transport | START / STOP / RESET | same |
-| Pause / quit | SPACE / ESC | same |
-| Cycle engines by keyboard | `,` `.` (left), `[` `]` (right) | — |
-
-Configuration changes apply to **both** panels, so the two worlds stay
-identical and the PARITY guarantee holds live as well as in `--bench`.

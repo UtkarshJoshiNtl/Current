@@ -31,9 +31,6 @@
 #define ID_ENGL    1010
 #define ID_ENGR    1011
 #define ID_ROC     1020
-#define ID_CFG     1100   /* ID_CFG + slot*2 (+0 minus, +1 plus) */
-
-#define N_CFG      4      /* dt, thr, mu, cd  */
 
 #define SCALE_PX   112.0
 #define EARTH_PX   16
@@ -78,13 +75,10 @@ typedef struct {
     const GuiOptions *opt;
     HWND              hStart, hStop, hReset;
     HWND              hEng[2];          /* engine combo boxes */
-    HWND              hCfgMinus[N_CFG];
-    HWND              hCfgLabel[N_CFG];
-    HWND              hCfgPlus[N_CFG];
     HWND              hRoc;
     HWND              hCap[2];
     HWND              hView[2];
-    HWND              hStat[2][3];
+    HWND              hStat[2][2];
     HWND              hStatus;
     int               paused;
     int               frames;
@@ -93,6 +87,7 @@ typedef struct {
 typedef struct { App *app; int idx; } ViewCtx;
 
 static App g_app;
+static HWND g_hTooltip = NULL;
 
 static HFONT  g_fontBold = NULL;
 static HBRUSH g_brQuiet = NULL, g_brConj = NULL, g_brColl = NULL;
@@ -277,7 +272,7 @@ static void step_panels(void)
 
 static void update_stats(void)
 {
-    char line[192];
+    char line[128];
     for (int i = 0; i < 2; i++) {
         Sim *s = g_app.sim[i];
         snprintf(line, sizeof line, "Steps %lu", (unsigned long)s->steps);
@@ -287,32 +282,23 @@ static void update_stats(void)
                  (unsigned long)s->conj_total, (unsigned long)s->coll_total);
         SetWindowTextA(g_app.hStat[i][1], line);
 
-        snprintf(line, sizeof line, "Screen %.2f ms      Average %.2f ms",
-                 s->screen_ms_last,
-                 s->steps ? s->screen_ms_total / s->steps : 0.0);
-        SetWindowTextA(g_app.hStat[i][2], line);
-    }
-
-    /* captions follow the selected engines */
-    for (int i = 0; i < 2; i++) {
-        Sim *s = g_app.sim[i];
-        snprintf(line, sizeof line, "%s    %s",
-                 s->eng.vt ? s->eng.vt->label : "NONE",
-                 s->eng.vt ? s->eng.vt->cx : "");
-        SetWindowTextA(g_app.hCap[i], line);
-    }
-
-    /* config labels */
-    Sim *s = g_app.sim[0];
-    static const char *nm[N_CFG] = { "dt", "thr", "mu", "cd" };
-    double v[N_CFG] = { s->dt, s->threshold, s->mu, s->collision_dist };
-    for (int k = 0; k < N_CFG; k++) {
-        snprintf(line, sizeof line, "%s %.4f", nm[k], v[k]);
-        SetWindowTextA(g_app.hCfgLabel[k], line);
+        /* The combo selects the engine; the panel heading shows its growth rate. */
+        SetWindowTextA(g_app.hCap[i], s->eng.vt ? s->eng.vt->cx : "");
     }
 }
-
 /* ---- main window --------------------------------------------------------- */
+
+static void add_tooltip(HWND tool, const char *message)
+{
+    TOOLINFOA ti;
+    memset(&ti, 0, sizeof ti);
+    ti.cbSize = sizeof ti;
+    ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+    ti.hwnd = GetParent(tool);
+    ti.uId = (UINT_PTR)tool;
+    ti.lpszText = (LPSTR)message;
+    SendMessageA(g_hTooltip, TTM_ADDTOOLA, 0, (LPARAM)&ti);
+}
 
 static void create_controls(HWND h)
 {
@@ -325,67 +311,75 @@ static void create_controls(HWND h)
     g_app.hReset = CreateWindowExA(0, "BUTTON", "Reset",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
         0, 0, 10, 10, h, (HMENU)(INT_PTR)ID_RESET, NULL, NULL);
-
-    /* engine pickers (native combo boxes) */
-    for (int i = 0; i < 2; i++) {
-        g_app.hEng[i] = CreateWindowExA(0, "COMBOBOX", "",
-            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-            0, 0, 10, 100, h,
-            (HMENU)(INT_PTR)(i == 0 ? ID_ENGL : ID_ENGR), NULL, NULL);
-        for (int e = 0; e < ENG_COUNT; e++) {
-            const EngineVTable *vt = engine_vtable((EngineType)e);
-            if (vt) SendMessageA(g_app.hEng[i], CB_ADDSTRING, 0, (LPARAM)vt->label);
-        }
-        EngineType cur = g_app.sim[i]->eng_type;
-        SendMessageA(g_app.hEng[i], CB_SETCURSEL, (WPARAM)cur, 0);
-    }
-
-    /* config steppers: [-] value [+] for dt / threshold / mu / collision */
-    static const char *cfg_name[N_CFG] = { "dt", "thr", "mu", "cd" };
-    for (int s = 0; s < N_CFG; s++) {
-        g_app.hCfgMinus[s] = CreateWindowExA(0, "BUTTON", "-",
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            0, 0, 10, 10, h, (HMENU)(INT_PTR)(ID_CFG + s * 2), NULL, NULL);
-        g_app.hCfgLabel[s] = CreateWindowExA(0, "STATIC", cfg_name[s],
-            WS_CHILD | WS_VISIBLE | SS_CENTER,
-            0, 0, 10, 10, h, NULL, NULL, NULL);
-        g_app.hCfgPlus[s] = CreateWindowExA(0, "BUTTON", "+",
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            0, 0, 10, 10, h, (HMENU)(INT_PTR)(ID_CFG + s * 2 + 1), NULL, NULL);
-    }
-    g_app.hRoc = CreateWindowExA(0, "BUTTON", "ROC",
+    g_app.hRoc = CreateWindowExA(0, "BUTTON", "Remove on collision",
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
         0, 0, 10, 10, h, (HMENU)(INT_PTR)ID_ROC, NULL, NULL);
     SendMessageA(g_app.hRoc, BM_SETCHECK,
                  g_app.sim[0]->remove_on_collision ? BST_CHECKED : BST_UNCHECKED, 0);
 
-    static const char *caps[2] = { "KD-tree    O(n log n)", "Brute force    O(n^2)" };
+    g_hTooltip = CreateWindowExA(WS_EX_TOPMOST, TOOLTIPS_CLASSA, NULL,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_BALLOON,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        h, NULL, GetModuleHandleA(NULL), NULL);
+    if (g_hTooltip)
+        SendMessageA(g_hTooltip, TTM_SETMAXTIPWIDTH, 0, 320);
+
     for (int i = 0; i < 2; i++) {
-        g_app.hCap[i] = CreateWindowExA(0, "STATIC", caps[i],
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
+        g_app.hEng[i] = CreateWindowExA(0, "COMBOBOX", "",
+            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+            0, 0, 10, 140, h,
+            (HMENU)(INT_PTR)(i == 0 ? ID_ENGL : ID_ENGR), NULL, NULL);
+        for (int e = 0; e < ENG_COUNT; e++) {
+            const EngineVTable *vt = engine_vtable((EngineType)e);
+            if (vt) SendMessageA(g_app.hEng[i], CB_ADDSTRING, 0, (LPARAM)vt->label);
+        }
+        SendMessageA(g_app.hEng[i], CB_SETCURSEL,
+                     (WPARAM)g_app.sim[i]->eng_type, 0);
+
+        g_app.hCap[i] = CreateWindowExA(0, "STATIC", "",
+            WS_CHILD | WS_VISIBLE | SS_RIGHT,
             0, 0, 10, 10, h, NULL, NULL, NULL);
         if (g_fontBold)
             SendMessageA(g_app.hCap[i], WM_SETFONT, (WPARAM)g_fontBold, TRUE);
 
-        for (int j = 0; j < 3; j++)
+        for (int j = 0; j < 2; j++)
             g_app.hStat[i][j] = CreateWindowExA(0, "STATIC", "",
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
                 0, 0, 10, 10, h, NULL, NULL, NULL);
-    }
 
-    for (int i = 0; i < 2; i++) {
         ViewCtx *vc = (ViewCtx *)malloc(sizeof *vc);
-        vc->app = &g_app;
-        vc->idx = i;
+        if (vc) {
+            vc->app = &g_app;
+            vc->idx = i;
+        }
         g_app.hView[i] = CreateWindowExA(WS_EX_CLIENTEDGE, "AstrosisView", "",
             WS_CHILD | WS_VISIBLE,
             0, 0, 10, 10, h, NULL, NULL, NULL);
-        SetWindowLongPtrA(g_app.hView[i], GWLP_USERDATA, (LONG_PTR)vc);
+        if (g_app.hView[i] && vc)
+            SetWindowLongPtrA(g_app.hView[i], GWLP_USERDATA, (LONG_PTR)vc);
+        else
+            free(vc);
     }
 
     g_app.hStatus = CreateWindowExA(0, STATUSCLASSNAMEA, "",
         WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
         0, 0, 0, 0, h, (HMENU)(INT_PTR)ID_STATUS, NULL, NULL);
+
+    if (g_hTooltip) {
+        add_tooltip(g_app.hStart, "Resume both simulations.");
+        add_tooltip(g_app.hStop, "Pause both simulations.");
+        add_tooltip(g_app.hReset, "Restart both panels from the starting scene.");
+        add_tooltip(g_app.hRoc,
+            "When enabled, objects that collide are removed from the simulation.");
+        for (int i = 0; i < 2; i++) {
+            add_tooltip(g_app.hEng[i],
+                "Choose the spatial data structure used by this panel.");
+            add_tooltip(g_app.hCap[i],
+                "Approximate growth in screening work as the number of objects increases.");
+            add_tooltip(g_app.hView[i],
+                "Red marks a close conjunction. Yellow marks a collision.");
+        }
+    }
 }
 
 static void layout(HWND h)
@@ -395,69 +389,53 @@ static void layout(HWND h)
     RECT sr;
     GetWindowRect(g_app.hStatus, &sr);
     int sh = sr.bottom - sr.top;
-
     RECT cr;
     GetClientRect(h, &cr);
     int W = cr.right, H = cr.bottom;
 
-    int bw = 88, bh = 25, by = 8, bx = 10;
-    MoveWindow(g_app.hStart, bx, by, bw, bh, TRUE); bx += bw + 8;
-    MoveWindow(g_app.hStop,  bx, by, bw, bh, TRUE); bx += bw + 8;
-    MoveWindow(g_app.hReset, bx, by, bw, bh, TRUE); bx += bw + 16;
+    const int margin = 10, bh = 28, top = 48;
+    int bx = margin, by = 8;
+    MoveWindow(g_app.hStart, bx, by, 88, bh, TRUE); bx += 96;
+    MoveWindow(g_app.hStop,  bx, by, 88, bh, TRUE); bx += 96;
+    MoveWindow(g_app.hReset, bx, by, 88, bh, TRUE); bx += 104;
+    MoveWindow(g_app.hRoc, bx, by + 4, 190, bh - 4, TRUE);
 
-    /* engine combos (row 1) */
-    int comboW = 170;
-    MoveWindow(g_app.hEng[0], bx, by, comboW, bh + 120, TRUE); bx += comboW + 12;
-    MoveWindow(g_app.hEng[1], bx, by, comboW, bh + 120, TRUE); bx += comboW + 16;
-
-    /* ROC toggle (row 1, right of combos) */
-    MoveWindow(g_app.hRoc, bx, by + 3, 90, bh - 4, TRUE);
-
-    /* config steppers (row 2) */
-    int cy = by + bh + 6;
-    int slotW = 24, valW = 78, gap = 4;
-    int cx0 = 10;
-    for (int s = 0; s < N_CFG; s++) {
-        MoveWindow(g_app.hCfgMinus[s], cx0, cy, slotW, bh, TRUE);
-        MoveWindow(g_app.hCfgLabel[s], cx0 + slotW, cy, valW, bh, TRUE);
-        MoveWindow(g_app.hCfgPlus[s],  cx0 + slotW + valW, cy, slotW, bh, TRUE);
-        cx0 += slotW * 2 + valW + gap + 8;
-    }
-
-    int top = cy + bh + 10;
-    int margin = 10;
     int panelW = (W - 3 * margin) / 2;
+    int capH = 28, statH = 40;
     int availH = H - sh - top - 10;
-    int capH = 22, statH = 66;
     int viewH = availH - capH - statH - 8;
     if (viewH < 40) viewH = 40;
 
     for (int i = 0; i < 2; i++) {
         int px = margin + i * (panelW + margin);
-        MoveWindow(g_app.hCap[i],    px,     top,                 panelW, capH,  TRUE);
-        MoveWindow(g_app.hView[i],   px,     top + capH,          panelW, viewH, TRUE);
+        int comboW = panelW > 360 ? 190 : (panelW * 2 / 3);
+        MoveWindow(g_app.hEng[i], px, top, comboW, capH + 120, TRUE);
+        MoveWindow(g_app.hCap[i], px + comboW + 8, top,
+                   panelW - comboW - 8, capH, TRUE);
+        MoveWindow(g_app.hView[i], px, top + capH, panelW, viewH, TRUE);
+
         int sy = top + capH + viewH + 4;
-        MoveWindow(g_app.hStat[i][0], px + 4, sy,      panelW - 8, 18, TRUE);
+        MoveWindow(g_app.hStat[i][0], px + 4, sy, panelW - 8, 18, TRUE);
         MoveWindow(g_app.hStat[i][1], px + 4, sy + 18, panelW - 8, 18, TRUE);
-        MoveWindow(g_app.hStat[i][2], px + 4, sy + 36, panelW - 8, 18, TRUE);
     }
 
     int parts[2] = { W / 3, -1 };
     SendMessageA(g_app.hStatus, SB_SETPARTS, 2, (LPARAM)parts);
-
-    char sb[192];
+    char sb[128];
     snprintf(sb, sizeof sb, "Scene: %s",
              g_app.opt->scene_name ? g_app.opt->scene_name : "");
     SendMessageA(g_app.hStatus, SB_SETTEXTA, 0, (LPARAM)sb);
-
-    snprintf(sb, sizeof sb, "Compute budget %.0f ms/frame      Esc quit      Space pause",
-             g_app.opt->budget_ms);
-    SendMessageA(g_app.hStatus, SB_SETTEXTA, 1, (LPARAM)sb);
+    SendMessageA(g_app.hStatus, SB_SETTEXTA, 1, (LPARAM)"Esc: quit    Space: pause");
 }
-
 static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
     switch (m) {
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO *mmi = (MINMAXINFO *)l;
+        mmi->ptMinTrackSize.x = 900;
+        mmi->ptMinTrackSize.y = 560;
+        return 0;
+    }
     case WM_CREATE:
         create_controls(h);
         update_stats();
@@ -508,26 +486,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
             sim_set_remove_on_collision(g_app.sim[1], on);
             break;
         }
-        default:
-            if (LOWORD(w) >= ID_CFG && LOWORD(w) < ID_CFG + N_CFG * 2) {
-                int slot = (LOWORD(w) - ID_CFG) / 2;
-                int plus = (LOWORD(w) - ID_CFG) % 2;
-                double f = plus ? 1.5 : (1.0 / 1.5);
-                Sim *s = g_app.sim[0];
-                switch (slot) {
-                case 0: { double v = s->dt * f;
-                          sim_set_dt(g_app.sim[0], v); sim_set_dt(g_app.sim[1], v); break; }
-                case 1: { double v = s->threshold * f;
-                          sim_set_threshold(g_app.sim[0], v); sim_set_threshold(g_app.sim[1], v); break; }
-                case 2: { double v = s->mu * f;
-                          sim_set_mu(g_app.sim[0], v); sim_set_mu(g_app.sim[1], v); break; }
-                case 3: { double v = s->collision_dist * f;
-                          sim_set_collision_dist(g_app.sim[0], v);
-                          sim_set_collision_dist(g_app.sim[1], v); break; }
-                }
-                update_stats();
-            }
-            break;
+        default: break;
         }
         return 0;
 
@@ -559,7 +518,7 @@ int gui_run(Sim *left, Sim *right, const GuiOptions *opt)
 
     INITCOMMONCONTROLSEX icc;
     icc.dwSize = sizeof icc;
-    icc.dwICC  = ICC_BAR_CLASSES;
+    icc.dwICC  = ICC_BAR_CLASSES | ICC_WIN95_CLASSES;
     InitCommonControlsEx(&icc);
 
     HINSTANCE inst = GetModuleHandleA(NULL);
@@ -587,7 +546,7 @@ int gui_run(Sim *left, Sim *right, const GuiOptions *opt)
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
 
     HWND h = CreateWindowExA(0, "AstrosisMainWnd",
-        "Astrosis-C  -  spatial indexing & conjunction screening",
+        "",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
         NULL, NULL, inst, NULL);
